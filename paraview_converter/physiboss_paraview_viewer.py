@@ -10,7 +10,9 @@ import scipy.io
 import numpy as np
 import xml.etree.ElementTree as ET
 from vtk import (vtkUnstructuredGrid, vtkPoints, vtkVertex, vtkDoubleArray,
-                vtkCellArray, vtkXMLUnstructuredGridWriter)
+                vtkCellArray, vtkXMLUnstructuredGridWriter, vtkPolyData,
+                vtkSphereSource, vtkCylinderSource, vtkAppendPolyData,
+                vtkTransform, vtkTransformPolyDataFilter)
 import re
 
 def parse_physiboss_labels(xml_file):
@@ -43,6 +45,52 @@ def parse_physiboss_labels(xml_file):
         print(f"Error parsing XML file {xml_file}: {str(e)}")
         return {}
 
+def create_cell_geometry(x, y, z, cell_type=None, radius=10.0, height=None, orientation=None):
+    """Create geometry for a single cell based on its properties"""
+    if cell_type is None or cell_type == 0:  # Default or type 0: sphere
+        sphere = vtkSphereSource()
+        sphere.SetCenter(x, y, z)
+        sphere.SetRadius(radius)
+        sphere.SetPhiResolution(16)
+        sphere.SetThetaResolution(16)
+        sphere.Update()
+        return sphere.GetOutput()
+    elif cell_type == 1:  # Type 1: cylinder (e.g., for rod-shaped cells)
+        if height is None:
+            height = 2.0 * radius
+        cylinder = vtkCylinderSource()
+        cylinder.SetRadius(radius)
+        cylinder.SetHeight(height)
+        cylinder.SetResolution(16)
+        cylinder.CappingOn()
+        cylinder.Update()
+        
+        # Create transform to position and orient the cylinder
+        transform = vtkTransform()
+        transform.PostMultiply()
+        transform.Translate(-x, -y, -z)  # Move to origin
+        
+        if orientation is not None:
+            # Apply orientation if provided
+            transform.RotateWXYZ(orientation[0], orientation[1], orientation[2], orientation[3])
+        
+        transform.Translate(x, y, z)  # Move back to position
+        
+        # Apply transform
+        transformFilter = vtkTransformPolyDataFilter()
+        transformFilter.SetInputData(cylinder.GetOutput())
+        transformFilter.SetTransform(transform)
+        transformFilter.Update()
+        
+        return transformFilter.GetOutput()
+    
+    # Default to sphere if type not recognized
+    sphere = vtkSphereSource()
+    sphere.SetCenter(x, y, z)
+    sphere.SetRadius(radius)
+    sphere.Update()
+    return sphere.GetOutput()
+
 def mat_to_vtu(mat_file, xml_file, output_file):
     """Convert a PhysiCell .mat file to VTU format with proper labels"""
     try:
@@ -53,41 +101,75 @@ def mat_to_vtu(mat_file, xml_file, output_file):
         
         # Load mat file
         data = scipy.io.loadmat(mat_file)
-        cells = data['cells']
+        cells_data = data['cells']
         
         # Debug print
         print(f"Processing {os.path.basename(mat_file)}")
-        print(f"Cells array shape: {cells.shape}")
+        print(f"Cells array shape: {cells_data.shape}")
+        
+        # Get number of cells
+        num_cells = cells_data.shape[1]
         
         # Create VTK grid
         grid = vtkUnstructuredGrid()
         points = vtkPoints()
         
-        # Get number of cells
-        num_cells = cells.shape[1]
+        # Track valid cells
+        valid_cell_indices = []
+        cell_types = []  # Store cell types for later
+        cell_radii = []  # Store cell radii for later
         
-        # Add points to the grid (positions are at indices 1,2,3)
+        # Process each cell
         for i in range(num_cells):
             try:
-                x = float(cells[1][i])
-                y = float(cells[2][i])
-                z = float(cells[3][i])
+                # Get cell position
+                x = float(cells_data[1][i])
+                y = float(cells_data[2][i])
+                z = float(cells_data[3][i])
+                
+                # Get cell properties (if available)
+                cell_type = int(cells_data[5][i]) if cells_data.shape[0] > 5 else 0
+                radius = float(cells_data[4][i]) if cells_data.shape[0] > 4 else 10.0
+                
+                # Add point
                 points.InsertNextPoint(x, y, z)
+                
+                # Track this cell
+                valid_cell_indices.append(i)
+                cell_types.append(cell_type)
+                cell_radii.append(radius)
+                
             except (IndexError, ValueError) as e:
-                print(f"Warning: Error processing position for cell {i}: {e}")
-                points.InsertNextPoint(0, 0, 0)  # Use default position
+                print(f"Warning: Error processing cell {i}: {e}")
+                continue
         
         grid.SetPoints(points)
         
-        # Create cells (vertices)
+        # Create vertices
         vertices = vtkCellArray()
-        for i in range(num_cells):
+        for i in range(len(valid_cell_indices)):
             vertex = vtkVertex()
             vertex.GetPointIds().SetId(0, i)
             vertices.InsertNextCell(vertex)
         grid.SetCells(vtkVertex().GetCellType(), vertices)
         
-        # Add cell data
+        # Add cell type and radius as point data
+        type_array = vtkDoubleArray()
+        type_array.SetName("cell_type")
+        type_array.SetNumberOfComponents(1)
+        
+        radius_array = vtkDoubleArray()
+        radius_array.SetName("radius")
+        radius_array.SetNumberOfComponents(1)
+        
+        for i in range(len(valid_cell_indices)):
+            type_array.InsertNextValue(cell_types[i])
+            radius_array.InsertNextValue(cell_radii[i])
+        
+        grid.GetPointData().AddArray(type_array)
+        grid.GetPointData().AddArray(radius_array)
+        
+        # Add other cell data
         for idx, label_info in labels.items():
             name = label_info['name']
             size = label_info['size']
@@ -96,8 +178,8 @@ def mat_to_vtu(mat_file, xml_file, output_file):
             if name == "position":
                 continue
                 
-            # Skip indices that don't exist in the cells array
-            if idx >= cells.shape[0]:
+            # Skip indices that don't exist in the original data
+            if idx >= cells_data.shape[0]:
                 continue
                 
             try:
@@ -108,9 +190,9 @@ def mat_to_vtu(mat_file, xml_file, output_file):
                 if size == 1:
                     # Scalar data
                     array.SetNumberOfComponents(1)
-                    for i in range(num_cells):
+                    for cell_idx in valid_cell_indices:
                         try:
-                            value = float(cells[idx][i])
+                            value = float(cells_data[idx][cell_idx])
                             if np.isnan(value) or np.isinf(value):
                                 value = 0.0
                             array.InsertNextValue(value)
@@ -119,12 +201,12 @@ def mat_to_vtu(mat_file, xml_file, output_file):
                 else:
                     # Vector data
                     array.SetNumberOfComponents(size)
-                    for i in range(num_cells):
+                    for cell_idx in valid_cell_indices:
                         try:
                             vector = []
                             for j in range(size):
-                                if idx + j < cells.shape[0]:
-                                    val = float(cells[idx + j][i])
+                                if idx + j < cells_data.shape[0]:
+                                    val = float(cells_data[idx + j][cell_idx])
                                     if np.isnan(val) or np.isinf(val):
                                         val = 0.0
                                     vector.append(val)
@@ -134,7 +216,7 @@ def mat_to_vtu(mat_file, xml_file, output_file):
                         except (IndexError, ValueError):
                             array.InsertNextTuple([0.0] * size)
                 
-                grid.GetCellData().AddArray(array)
+                grid.GetPointData().AddArray(array)
             except Exception as e:
                 print(f"Warning: Skipping field {name} due to error: {str(e)}")
                 continue

@@ -108,6 +108,58 @@ The converter extracts the actual simulation timestep numbers directly from the 
 - No artificial time intervals are imposed on the data
 - The visualization accurately represents the simulation timeline
 
+## Advanced Visualization
+
+### Cell Geometries in ParaView
+
+The script stores cell geometry information as points with attributes, allowing flexible visualization in ParaView. Here's how to visualize cells with different shapes:
+
+#### Method 1: Simple Visualization (All cells same type)
+1. Open the PVD file in ParaView
+2. Click "Apply" in the Properties panel
+3. Add a Glyph filter:
+   - Click 'Filters' > 'Alphabetical' > 'Glyph'
+4. In the Glyph properties panel:
+   - Set "Glyph Type" to Sphere or Cylinder
+   - Set "Scale Array" to "radius"
+   - Adjust "Scale Factor" as needed (try 1.0 initially)
+   - For cylinders, turn on "Orient" if you have orientation data
+
+#### Method 2: Mixed Cell Types (Spheres and Cylinders)
+1. First, separate cell types:
+   - Add "Threshold" filter
+   - Set "cell_type" as the array to threshold
+   - For spherical cells: set value to 0
+   - For cylindrical cells: set value to 1
+2. For spherical cells (cell_type = 0):
+   - Add Glyph filter to the threshold output
+   - Set Glyph Type to Sphere
+   - Scale by radius
+   - Orient: Off
+3. For cylindrical cells (cell_type = 1):
+   - Add another Glyph filter
+   - Set Glyph Type to Cylinder
+   - Scale by radius
+   - Orient: On (if orientation data available)
+
+#### Customization Tips
+- **Coloring**: Use the "Coloring" dropdown to color cells by any data field
+- **Size Adjustment**: 
+  - Use "Scale Factor" to make all cells larger or smaller
+  - The "radius" array controls individual cell sizes
+- **Resolution**: Adjust "Resolution" parameters for smoother spheres/cylinders
+- **Orientation**: For cylinders, orientation can be controlled if you have vector data
+
+#### Available Cell Types
+- Type 0: Spherical cells (default)
+- Type 1: Cylindrical cells (e.g., rod-shaped bacteria)
+
+#### Data Fields
+The converter provides several key fields for visualization:
+- `cell_type`: Determines the cell shape (0=sphere, 1=cylinder)
+- `radius`: Controls the cell size
+- Additional fields from the original data can be used for coloring or filtering
+
 ## Troubleshooting
 
 - **File not found errors**: Ensure all XML and MAT files follow the expected naming convention
